@@ -36,5 +36,13 @@ func checkWebsite(url string) {
 }
 
 func main() {
-	checkWebsite("https://example.com")
+	websites := []string{
+		"https://example.com",
+		"https://google.com",
+		"https://github.com",
+	}
+
+	for _, website := range websites {
+		checkWebsite(website)
+	}
 }
