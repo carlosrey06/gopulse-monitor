@@ -7,7 +7,16 @@ import (
 	"time"
 )
 
-func checkWebsite(url string) {
+type CheckResult struct {
+	URL          string
+	Status       string
+	HTTPStatus   string
+	StatusCode   int
+	ResponseTime int64
+	Error        string
+}
+
+func checkWebsite(url string) CheckResult {
 	start := time.Now()
 
 	response, err := http.Get(url)
@@ -15,10 +24,12 @@ func checkWebsite(url string) {
 	duration := time.Since(start)
 
 	if err != nil {
-		fmt.Println("Status: OFFLINE")
-		fmt.Println("Error:", err)
-		fmt.Println("Response time:", duration.Milliseconds(), "ms")
-		return
+		return CheckResult{
+			URL:          url,
+			Status:       "OFFLINE",
+			ResponseTime: duration.Milliseconds(),
+			Error:        err.Error(),
+		}
 	}
 
 	defer response.Body.Close()
@@ -29,12 +40,29 @@ func checkWebsite(url string) {
 		status = "OFFLINE"
 	}
 
-	fmt.Println("URL:", url)
-	fmt.Println("Status:", status)
-	fmt.Println("HTTP:", response.Status)
-	fmt.Println("Status code:", response.StatusCode)
-	fmt.Println("Response time:", duration.Milliseconds(), "ms")
+	return CheckResult{
+		URL:          url,
+		Status:       status,
+		HTTPStatus:   response.Status,
+		StatusCode:   response.StatusCode,
+		ResponseTime: duration.Milliseconds(),
+	}
 }
+
+func printResult(result CheckResult) {
+	fmt.Println("URL:", result.URL)
+	fmt.Println("Status:", result.Status)
+
+	if result.Error != "" {
+		fmt.Println("Error:", result.Error)
+	} else {
+		fmt.Println("HTTP:", result.HTTPStatus)
+		fmt.Println("Status code:", result.StatusCode)
+	}
+
+	fmt.Println("Response time:", result.ResponseTime, "ms")
+}
+
 func main() {
 	websites := []string{
 		"https://example.com",
@@ -51,7 +79,9 @@ func main() {
 
 		go func(url string) {
 			defer wg.Done()
-			checkWebsite(url)
+
+			result := checkWebsite(url)
+			printResult(result)
 		}(website)
 	}
 
