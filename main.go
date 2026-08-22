@@ -92,7 +92,13 @@ func main() {
 		close(results)
 	}()
 
+	var checkResults []CheckResult
+
 	for result := range results {
+		checkResults = append(checkResults, result)
+	}
+
+	for _, result := range checkResults {
 		printResult(result)
 	}
 
