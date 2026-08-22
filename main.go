@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 )
 
@@ -64,57 +63,32 @@ func printResult(result CheckResult) {
 	fmt.Println("Response time:", result.ResponseTime, "ms")
 }
 
+type HealthResponse struct {
+	Status  string `json:"status"`
+	Service string `json:"service"`
+}
+
 func main() {
-	websites := []string{
-		"https://example.com",
-		"https://google.com",
-		"https://github.com",
-	}
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
 
-	start := time.Now()
+		response := HealthResponse{
+			Status:  "ok",
+			Service: "gopulse-monitor",
+		}
 
-	var wg sync.WaitGroup
+		err := json.NewEncoder(w).Encode(response)
 
-	results := make(chan CheckResult)
+		if err != nil {
+			fmt.Println("Error encoding response:", err)
+		}
+	})
 
-	for _, website := range websites {
-		wg.Add(1)
+	fmt.Println("GoPulse API running on http://localhost:8080")
 
-		go func(url string) {
-			defer wg.Done()
-
-			result := checkWebsite(url)
-			results <- result
-		}(website)
-	}
-
-	go func() {
-		wg.Wait()
-		close(results)
-	}()
-
-	var checkResults []CheckResult
-
-	for result := range results {
-		checkResults = append(checkResults, result)
-	}
-
-	for _, result := range checkResults {
-		printResult(result)
-	}
-
-	jsonData, err := json.MarshalIndent(checkResults, "", "  ")
+	err := http.ListenAndServe(":8080", nil)
 
 	if err != nil {
-		fmt.Println("Error generating JSON:", err)
-		return
+		fmt.Println("Server error:", err)
 	}
-
-	fmt.Println()
-	fmt.Println("JSON:")
-	fmt.Println(string(jsonData))
-
-	totalDuration := time.Since(start)
-
-	fmt.Println("Total time:", totalDuration.Milliseconds(), "ms")
 }
