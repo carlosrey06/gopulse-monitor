@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
 	"time"
 )
 
@@ -16,16 +17,21 @@ type CheckResult struct {
 	Error        string `json:"error,omitempty"`
 }
 
-func checkWebsite(url string) CheckResult {
+type HealthResponse struct {
+	Status  string `json:"status"`
+	Service string `json:"service"`
+}
+
+func checkWebsite(rawURL string) CheckResult {
 	start := time.Now()
 
-	response, err := http.Get(url)
+	response, err := http.Get(rawURL)
 
 	duration := time.Since(start)
 
 	if err != nil {
 		return CheckResult{
-			URL:          url,
+			URL:          rawURL,
 			Status:       "OFFLINE",
 			ResponseTime: duration.Milliseconds(),
 			Error:        err.Error(),
@@ -41,7 +47,7 @@ func checkWebsite(url string) CheckResult {
 	}
 
 	return CheckResult{
-		URL:          url,
+		URL:          rawURL,
 		Status:       status,
 		HTTPStatus:   response.Status,
 		StatusCode:   response.StatusCode,
@@ -63,9 +69,18 @@ func printResult(result CheckResult) {
 	fmt.Println("Response time:", result.ResponseTime, "ms")
 }
 
-type HealthResponse struct {
-	Status  string `json:"status"`
-	Service string `json:"service"`
+func isValidURL(rawURL string) bool {
+	parsedURL, err := url.Parse(rawURL)
+
+	if err != nil {
+		return false
+	}
+
+	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
+		return false
+	}
+
+	return parsedURL.Host != ""
 }
 
 func main() {
@@ -85,16 +100,21 @@ func main() {
 	})
 
 	http.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+		rawURL := r.URL.Query().Get("url")
 
-		url := r.URL.Query().Get("url")
-
-		if url == "" {
+		if rawURL == "" {
 			http.Error(w, "url parameter is required", http.StatusBadRequest)
 			return
 		}
 
-		result := checkWebsite(url)
+		if !isValidURL(rawURL) {
+			http.Error(w, "invalid url", http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+
+		result := checkWebsite(rawURL)
 
 		err := json.NewEncoder(w).Encode(result)
 
