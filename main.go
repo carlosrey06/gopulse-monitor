@@ -84,6 +84,25 @@ func main() {
 		}
 	})
 
+	http.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+
+		url := r.URL.Query().Get("url")
+
+		if url == "" {
+			http.Error(w, "url parameter is required", http.StatusBadRequest)
+			return
+		}
+
+		result := checkWebsite(url)
+
+		err := json.NewEncoder(w).Encode(result)
+
+		if err != nil {
+			fmt.Println("Error encoding response:", err)
+		}
+	})
+
 	fmt.Println("GoPulse API running on http://localhost:8080")
 
 	err := http.ListenAndServe(":8080", nil)
