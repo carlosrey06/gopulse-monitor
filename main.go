@@ -74,6 +74,8 @@ func main() {
 
 	var wg sync.WaitGroup
 
+	results := make(chan CheckResult)
+
 	for _, website := range websites {
 		wg.Add(1)
 
@@ -81,11 +83,18 @@ func main() {
 			defer wg.Done()
 
 			result := checkWebsite(url)
-			printResult(result)
+			results <- result
 		}(website)
 	}
 
-	wg.Wait()
+	go func() {
+		wg.Wait()
+		close(results)
+	}()
+
+	for result := range results {
+		printResult(result)
+	}
 
 	totalDuration := time.Since(start)
 
