@@ -25,7 +25,11 @@ type HealthResponse struct {
 func checkWebsite(rawURL string) CheckResult {
 	start := time.Now()
 
-	response, err := http.Get(rawURL)
+	client := http.Client{
+		Timeout: 5 * time.Second,
+	}
+
+	response, err := client.Get(rawURL)
 
 	duration := time.Since(start)
 
