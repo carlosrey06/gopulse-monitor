@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"sync"
@@ -8,12 +9,12 @@ import (
 )
 
 type CheckResult struct {
-	URL          string
-	Status       string
-	HTTPStatus   string
-	StatusCode   int
-	ResponseTime int64
-	Error        string
+	URL          string `json:"url"`
+	Status       string `json:"status"`
+	HTTPStatus   string `json:"http_status,omitempty"`
+	StatusCode   int    `json:"status_code,omitempty"`
+	ResponseTime int64  `json:"response_time_ms"`
+	Error        string `json:"error,omitempty"`
 }
 
 func checkWebsite(url string) CheckResult {
@@ -101,6 +102,17 @@ func main() {
 	for _, result := range checkResults {
 		printResult(result)
 	}
+
+	jsonData, err := json.MarshalIndent(checkResults, "", "  ")
+
+	if err != nil {
+		fmt.Println("Error generating JSON:", err)
+		return
+	}
+
+	fmt.Println()
+	fmt.Println("JSON:")
+	fmt.Println(string(jsonData))
 
 	totalDuration := time.Since(start)
 
