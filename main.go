@@ -1,20 +1,45 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
+	"sync"
 	"time"
 )
 
+const serverAddress = ":8080"
+
+var httpClient = &http.Client{
+	Timeout: 5 * time.Second,
+}
+
+var monitors = []Monitor{
+	{ID: "sellers", Name: "Sellers", URL: "https://sellers.importacionesamexico.com.mx/"},
+	{ID: "friopuro", Name: "Frío Puro", URL: "https://friopuro.com.mx/"},
+	{ID: "imxtime", Name: "IMXTime", URL: "https://imxtime.importacionesamexico.com.mx/"},
+	{ID: "imx", Name: "Importaciones a México", URL: "https://www.importacionesamexico.com.mx/"},
+	{ID: "cadebot", Name: "Cadebot", URL: "https://www.importacionesamexico.com.mx/cadebot"},
+}
+
+type Monitor struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
 type CheckResult struct {
-	URL          string `json:"url"`
-	Status       string `json:"status"`
-	HTTPStatus   string `json:"http_status,omitempty"`
-	StatusCode   int    `json:"status_code,omitempty"`
-	ResponseTime int64  `json:"response_time_ms"`
-	Error        string `json:"error,omitempty"`
+	ID           string    `json:"id,omitempty"`
+	Name         string    `json:"name,omitempty"`
+	URL          string    `json:"url"`
+	Status       string    `json:"status"`
+	HTTPStatus   string    `json:"http_status,omitempty"`
+	StatusCode   int       `json:"status_code,omitempty"`
+	ResponseTime int64     `json:"response_time_ms"`
+	CheckedAt    time.Time `json:"checked_at"`
+	Error        string    `json:"error,omitempty"`
 }
 
 type HealthResponse struct {
@@ -22,40 +47,53 @@ type HealthResponse struct {
 	Service string `json:"service"`
 }
 
-func checkWebsite(rawURL string) CheckResult {
+func checkWebsite(ctx context.Context, monitor Monitor) CheckResult {
 	start := time.Now()
 
-	client := http.Client{
-		Timeout: 5 * time.Second,
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, monitor.URL, nil)
+	if err != nil {
+		return CheckResult{
+			ID:        monitor.ID,
+			Name:      monitor.Name,
+			URL:       monitor.URL,
+			Status:    "OFFLINE",
+			CheckedAt: time.Now(),
+			Error:     err.Error(),
+		}
 	}
 
-	response, err := client.Get(rawURL)
-
+	response, err := httpClient.Do(request)
 	duration := time.Since(start)
+	checkedAt := time.Now()
 
 	if err != nil {
 		return CheckResult{
-			URL:          rawURL,
+			ID:           monitor.ID,
+			Name:         monitor.Name,
+			URL:          monitor.URL,
 			Status:       "OFFLINE",
 			ResponseTime: duration.Milliseconds(),
+			CheckedAt:    checkedAt,
 			Error:        err.Error(),
 		}
 	}
 
 	defer response.Body.Close()
 
-	status := "ONLINE"
-
-	if response.StatusCode >= 400 {
-		status = "OFFLINE"
+	status := "OFFLINE"
+	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusBadRequest {
+		status = "ONLINE"
 	}
 
 	return CheckResult{
-		URL:          rawURL,
+		ID:           monitor.ID,
+		Name:         monitor.Name,
+		URL:          monitor.URL,
 		Status:       status,
 		HTTPStatus:   response.Status,
 		StatusCode:   response.StatusCode,
 		ResponseTime: duration.Milliseconds(),
+		CheckedAt:    checkedAt,
 	}
 }
 
@@ -87,23 +125,63 @@ func isValidURL(rawURL string) bool {
 	return parsedURL.Host != ""
 }
 
-func main() {
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
+func checkAllMonitors(ctx context.Context) []CheckResult {
+	results := make([]CheckResult, len(monitors))
+	var waitGroup sync.WaitGroup
 
-		response := HealthResponse{
+	for index, monitor := range monitors {
+		waitGroup.Add(1)
+		go func(index int, monitor Monitor) {
+			defer waitGroup.Done()
+			results[index] = checkWebsite(ctx, monitor)
+		}(index, monitor)
+	}
+
+	waitGroup.Wait()
+	return results
+}
+
+func writeJSON(w http.ResponseWriter, value any) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		fmt.Println("Error encoding response:", err)
+	}
+}
+
+func allowCORS(next http.Handler) http.Handler {
+	allowedOrigins := map[string]bool{
+		"http://localhost:4321": true,
+		"http://127.0.0.1:4321": true,
+	}
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if allowedOrigins[r.Header.Get("Origin")] {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Set("Vary", "Origin")
+		}
+
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", http.MethodGet+", OPTIONS")
+			w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func main() {
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, HealthResponse{
 			Status:  "ok",
 			Service: "gopulse-monitor",
-		}
-
-		err := json.NewEncoder(w).Encode(response)
-
-		if err != nil {
-			fmt.Println("Error encoding response:", err)
-		}
+		})
 	})
 
-	http.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/check", func(w http.ResponseWriter, r *http.Request) {
 		rawURL := r.URL.Query().Get("url")
 
 		if rawURL == "" {
@@ -116,22 +194,16 @@ func main() {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json")
+		writeJSON(w, checkWebsite(r.Context(), Monitor{URL: rawURL}))
+	})
 
-		result := checkWebsite(rawURL)
-
-		err := json.NewEncoder(w).Encode(result)
-
-		if err != nil {
-			fmt.Println("Error encoding response:", err)
-		}
+	mux.HandleFunc("/api/monitors", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, checkAllMonitors(r.Context()))
 	})
 
 	fmt.Println("GoPulse API running on http://localhost:8080")
 
-	err := http.ListenAndServe(":8080", nil)
-
-	if err != nil {
+	if err := http.ListenAndServe(serverAddress, allowCORS(mux)); err != nil {
 		fmt.Println("Server error:", err)
 	}
 }

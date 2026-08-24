@@ -1,0 +1,351 @@
+<main class="dashboard-shell antialiased">
+  <section class="dashboard" aria-labelledby="page-title">
+    <header class="dashboard-header">
+      <div>
+        <p class="eyebrow">LIVE INFRASTRUCTURE STATUS</p>
+        <h1 id="page-title">GoPulse Monitor</h1>
+        <p class="subtitle">Website &amp; Service Monitoring</p>
+      </div>
+      <div class="header-actions">
+        <p class="updated-label" aria-live="polite">Last updated: <span id="last-updated">Waiting for data</span></p>
+        <button id="check-now" class="check-button" type="button">
+          <span class="button-indicator" aria-hidden="true"></span>
+          <span id="check-button-label">Check now</span>
+        </button>
+      </div>
+    </header>
+
+    <section class="summary-grid" aria-label="Monitoring summary">
+      <article class="summary-card">
+        <span class="summary-label">Total monitors</span>
+        <strong id="total-monitors" class="summary-value">—</strong>
+        <span class="summary-note">Configured services</span>
+      </article>
+      <article class="summary-card online-summary">
+        <span class="summary-label">Online</span>
+        <strong id="online-monitors" class="summary-value">—</strong>
+        <span class="summary-note">Responding normally</span>
+      </article>
+      <article class="summary-card offline-summary">
+        <span class="summary-label">Offline</span>
+        <strong id="offline-monitors" class="summary-value">—</strong>
+        <span class="summary-note">Needs attention</span>
+      </article>
+      <article class="summary-card">
+        <span class="summary-label">Average response</span>
+        <strong id="average-response" class="summary-value">—</strong>
+        <span class="summary-note">Across all monitors</span>
+      </article>
+    </section>
+
+    <section id="api-error" class="api-error" role="alert" hidden>
+      <div>
+        <strong>Unable to reach GoPulse API</strong>
+        <p>Check that the backend is running on port 8080, then try again.</p>
+      </div>
+      <button id="retry" class="retry-button" type="button">Retry</button>
+    </section>
+
+    <section class="content-grid">
+      <section class="monitor-section" aria-labelledby="monitors-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">SERVICE STATUS</p>
+            <h2 id="monitors-title">Monitors</h2>
+          </div>
+          <span id="refresh-state" class="refresh-state" aria-live="polite">Ready</span>
+        </div>
+        <div id="monitor-grid" class="monitor-grid" aria-live="polite"></div>
+      </section>
+
+      <section class="chart-card" aria-labelledby="response-chart-title">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">CURRENT SNAPSHOT</p>
+            <h2 id="response-chart-title">Response time</h2>
+          </div>
+          <span class="chart-unit">milliseconds</span>
+        </div>
+        <div id="response-chart" class="response-chart" aria-label="Bar chart comparing current response times"></div>
+      </section>
+    </section>
+  </section>
+</main>
+
+<script>
+  import * as echarts from "echarts";
+  import type { ECharts, EChartsOption } from "echarts";
+
+  type MonitorStatus = "ONLINE" | "OFFLINE";
+
+  interface MonitorResult {
+    id: string;
+    name: string;
+    url: string;
+    status: MonitorStatus;
+    http_status?: string;
+    status_code?: number;
+    response_time_ms: number;
+    checked_at: string;
+    error?: string;
+  }
+
+  const apiURL = "http://localhost:8080/api/monitors";
+  const refreshIntervalMs = 30_000;
+
+  function requiredElement<T extends Element>(selector: string): T {
+    const element = document.querySelector<T>(selector);
+    if (!element) {
+      throw new Error(`Missing dashboard element: ${selector}`);
+    }
+    return element;
+  }
+
+  const monitorGrid = requiredElement<HTMLDivElement>("#monitor-grid");
+  const apiError = requiredElement<HTMLElement>("#api-error");
+  const checkNow = requiredElement<HTMLButtonElement>("#check-now");
+  const retry = requiredElement<HTMLButtonElement>("#retry");
+  const checkButtonLabel = requiredElement<HTMLSpanElement>("#check-button-label");
+  const refreshState = requiredElement<HTMLSpanElement>("#refresh-state");
+  const lastUpdated = requiredElement<HTMLSpanElement>("#last-updated");
+  const totalMonitors = requiredElement<HTMLElement>("#total-monitors");
+  const onlineMonitors = requiredElement<HTMLElement>("#online-monitors");
+  const offlineMonitors = requiredElement<HTMLElement>("#offline-monitors");
+  const averageResponse = requiredElement<HTMLElement>("#average-response");
+  const chartElement = requiredElement<HTMLDivElement>("#response-chart");
+
+  const chart: ECharts = echarts.init(chartElement);
+  let isLoading = false;
+
+  function getToken(name: string): string {
+    return getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  }
+
+  function formatResponseTime(value: number): string {
+    return `${Math.round(value)} ms`;
+  }
+
+  function formatDate(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "Unavailable";
+    }
+
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: "medium",
+      timeStyle: "medium",
+    }).format(date);
+  }
+
+  function formatTime(value: string): string {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) {
+      return "Unavailable";
+    }
+
+    return new Intl.DateTimeFormat(undefined, { timeStyle: "medium" }).format(date);
+  }
+
+  function isMonitorResult(value: unknown): value is MonitorResult {
+    if (typeof value !== "object" || value === null) {
+      return false;
+    }
+
+    const result = value as Record<string, unknown>;
+    return (
+      typeof result.id === "string" &&
+      typeof result.name === "string" &&
+      typeof result.url === "string" &&
+      (result.status === "ONLINE" || result.status === "OFFLINE") &&
+      typeof result.response_time_ms === "number" &&
+      typeof result.checked_at === "string"
+    );
+  }
+
+  function setLoading(loading: boolean): void {
+    isLoading = loading;
+    checkNow.disabled = loading;
+    checkButtonLabel.textContent = loading ? "Checking…" : "Check now";
+    refreshState.textContent = loading ? "Updating services…" : "Ready";
+    document.documentElement.dataset.updating = String(loading);
+  }
+
+  function createDetail(label: string, value: string): HTMLDivElement {
+    const detail = document.createElement("div");
+    detail.className = "monitor-detail";
+
+    const detailLabel = document.createElement("span");
+    detailLabel.textContent = label;
+
+    const detailValue = document.createElement("strong");
+    detailValue.textContent = value;
+
+    detail.append(detailLabel, detailValue);
+    return detail;
+  }
+
+  function renderMonitors(monitors: MonitorResult[]): void {
+    const fragment = document.createDocumentFragment();
+
+    for (const monitor of monitors) {
+      const card = document.createElement("article");
+      card.className = `monitor-card ${monitor.status.toLowerCase()}`;
+
+      const cardTop = document.createElement("div");
+      cardTop.className = "monitor-card-top";
+
+      const name = document.createElement("h3");
+      name.textContent = monitor.name;
+
+      const status = document.createElement("span");
+      status.className = "status-badge";
+      status.textContent = monitor.status;
+
+      cardTop.append(name, status);
+
+      const url = document.createElement("a");
+      url.className = "monitor-url";
+      url.href = monitor.url;
+      url.target = "_blank";
+      url.rel = "noreferrer";
+      url.textContent = monitor.url;
+
+      const details = document.createElement("div");
+      details.className = "monitor-details";
+      details.append(
+        createDetail("HTTP", monitor.http_status ?? "No response"),
+        createDetail("Response", formatResponseTime(monitor.response_time_ms)),
+        createDetail("Checked", formatTime(monitor.checked_at)),
+      );
+
+      card.append(cardTop, url, details);
+
+      if (monitor.error) {
+        const error = document.createElement("p");
+        error.className = "monitor-error";
+        error.textContent = monitor.error;
+        card.append(error);
+      }
+
+      fragment.append(card);
+    }
+
+    monitorGrid.replaceChildren(fragment);
+  }
+
+  function renderSummary(monitors: MonitorResult[]): void {
+    const online = monitors.filter((monitor) => monitor.status === "ONLINE").length;
+    const offline = monitors.length - online;
+    const average = monitors.length === 0
+      ? 0
+      : monitors.reduce((total, monitor) => total + monitor.response_time_ms, 0) / monitors.length;
+
+    totalMonitors.textContent = String(monitors.length);
+    onlineMonitors.textContent = String(online);
+    offlineMonitors.textContent = String(offline);
+    averageResponse.textContent = monitors.length === 0 ? "—" : formatResponseTime(average);
+
+    const mostRecentCheck = monitors.reduce<string | undefined>((latest, monitor) => {
+      if (!latest || new Date(monitor.checked_at) > new Date(latest)) {
+        return monitor.checked_at;
+      }
+      return latest;
+    }, undefined);
+    lastUpdated.textContent = mostRecentCheck ? formatDate(mostRecentCheck) : "Waiting for data";
+  }
+
+  function renderChart(monitors: MonitorResult[]): void {
+    const onlineColor = getToken("--chart-online");
+    const offlineColor = getToken("--chart-offline");
+    const option: EChartsOption = {
+      animationDuration: 450,
+      grid: { top: 12, right: 24, bottom: 8, left: 8, containLabel: true },
+      tooltip: {
+        trigger: "axis",
+        axisPointer: { type: "shadow" },
+      },
+      xAxis: {
+        type: "value",
+        axisLabel: { color: getToken("--color-text-muted") },
+        splitLine: { lineStyle: { color: getToken("--color-border") } },
+      },
+      yAxis: {
+        type: "category",
+        data: monitors.map((monitor) => monitor.name),
+        axisLabel: { color: getToken("--color-text"), width: 120, overflow: "truncate" },
+        axisLine: { show: false },
+        axisTick: { show: false },
+      },
+      series: [
+        {
+          type: "bar",
+          data: monitors.map((monitor) => ({
+            value: monitor.response_time_ms,
+            itemStyle: {
+              color: monitor.status === "ONLINE" ? onlineColor : offlineColor,
+              borderRadius: [0, 6, 6, 0],
+            },
+          })),
+          barMaxWidth: 30,
+          label: {
+            show: true,
+            position: "right",
+            color: getToken("--color-text-muted"),
+            formatter: "{c} ms",
+          },
+        },
+      ],
+    };
+
+    chart.setOption(option, true);
+  }
+
+  function showError(): void {
+    apiError.hidden = false;
+    refreshState.textContent = "Connection unavailable";
+  }
+
+  function hideError(): void {
+    apiError.hidden = true;
+  }
+
+  async function loadMonitors(): Promise<void> {
+    if (isLoading) {
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const response = await fetch(apiURL, { headers: { Accept: "application/json" } });
+      if (!response.ok) {
+        throw new Error(`GoPulse API returned ${response.status}`);
+      }
+
+      const payload: unknown = await response.json();
+      if (!Array.isArray(payload) || !payload.every(isMonitorResult)) {
+        throw new Error("GoPulse API returned an unexpected response.");
+      }
+
+      renderSummary(payload);
+      renderMonitors(payload);
+      renderChart(payload);
+      hideError();
+    } catch {
+      showError();
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  checkNow.addEventListener("click", () => void loadMonitors());
+  retry.addEventListener("click", () => void loadMonitors());
+  window.addEventListener("resize", () => chart.resize());
+
+  const timer = window.setInterval(() => void loadMonitors(), refreshIntervalMs);
+  window.addEventListener("beforeunload", () => {
+    window.clearInterval(timer);
+    chart.dispose();
+  });
+
+  void loadMonitors();
+</script>
